@@ -2,7 +2,14 @@
   "interval_minutes": 30,
   "poll_seconds": 15,
   "idle_reset_minutes": 2,
-  "backend": "adb",
+  "backend": "iphone",
   "alert_title": "Phone break",
-  "alert_message": "You've been on your phone for 30 minutes. Time to put it down."
+  "alert_message": "You've been on your phone for 30 minutes. Time to put it down.",
+  "iphone": {
+    "host": "0.0.0.0",
+    "port": 8765,
+    "secret": "change-me-to-a-long-random-string",
+    "heartbeat_stale_seconds": 45,
+    "alert_on_iphone": true
+  }
 }

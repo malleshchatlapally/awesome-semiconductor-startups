@@ -5,88 +5,79 @@ Small local agent that **only counts time while you are actively using your phon
 ## How it works
 
 1. Polls every ~15 seconds to see if the phone is in use.
-2. **Android (ADB):** screen on and not on the lock screen.
-3. Accumulates active-use seconds; when you hit 30 minutes, you get a desktop notification (or terminal bell).
-4. If the phone stays idle (screen off) for 2 minutes, the timer resets so breaks do not count against you.
+2. **iPhone (default):** your phone sends **heartbeats** via the Shortcuts app to this agent on your Mac (same Wi‑Fi). See [`ios/README.md`](ios/README.md).
+3. **Android (optional):** screen on and unlocked via **ADB** on a connected computer.
+4. When you hit 30 minutes of active use, you get an alert on your **iPhone** (next heartbeat) and on your **computer**.
+5. If heartbeats stop for ~2 minutes, the timer resets.
 
 ## Requirements
 
 - Python 3.9+
-- **Android:** [ADB](https://developer.android.com/tools/adb) on your computer, USB debugging or wireless debugging enabled, phone authorized (`adb devices` shows `device`).
+- **iPhone:** Mac or PC on the same network running this agent; iOS **Shortcuts** (setup in [`ios/README.md`](ios/README.md)).
+- **Android (optional):** [ADB](https://developer.android.com/tools/adb), USB or wireless debugging.
 
-Linux desktop alerts use `notify-send` (install `libnotify-bin` on Debian/Ubuntu). macOS uses Notification Center; Windows uses a toast when possible.
-
-## Quick start
+## Quick start (iPhone)
 
 ```bash
 cd phone-usage-agent
+mkdir -p ~/.config/phone-usage-agent
+cp config.example.json ~/.config/phone-usage-agent/config.json
+# Edit secret + save
 python3 agent.py
 ```
 
-First run with defaults uses the `adb` backend. Override on the command line:
+Then follow **[iPhone Shortcuts setup](ios/README.md)** (heartbeat loop in Control Center).
 
 ```bash
-# Alert every 20 minutes
-python3 agent.py --interval 20
-
-# Test without a phone (cycles fake "in use" / idle)
+# Test without an iPhone (fake heartbeats)
 python3 agent.py --backend simulate --interval 1 -v
 
-# Toggle usage yourself (Enter = start/stop)
-python3 agent.py --backend manual --interval 1 -v
+# Android instead
+python3 agent.py --backend adb
 ```
 
 ## Configuration
 
-Copy the example config:
-
-```bash
-mkdir -p ~/.config/phone-usage-agent
-cp config.example.json ~/.config/phone-usage-agent/config.json
-```
-
 | Field | Default | Meaning |
 |-------|---------|---------|
 | `interval_minutes` | 30 | Alert after this much **active** use |
-| `poll_seconds` | 15 | How often to check phone state |
-| `idle_reset_minutes` | 2 | Screen off this long → reset timer |
-| `backend` | `adb` | `adb`, `simulate`, or `manual` |
-| `alert_title` / `alert_message` | see file | Notification text |
+| `poll_seconds` | 15 | How often the agent checks state |
+| `idle_reset_minutes` | 2 | No heartbeats this long → reset timer |
+| `backend` | `iphone` | `iphone`, `adb`, `simulate`, or `manual` |
+| `iphone.port` | 8765 | HTTP port for Shortcuts POST |
+| `iphone.secret` | (required) | Bearer token in Shortcut headers |
+| `iphone.heartbeat_stale_seconds` | 45 | No heartbeat this long → not “in use” |
+| `iphone.alert_on_iphone` | true | Queue notification for next heartbeat |
 
-## Android setup
+## Run in the background (macOS launchd)
 
-1. On the phone: **Settings → Developer options → USB debugging** (on).
-2. Connect USB or pair [wireless debugging](https://developer.android.com/tools/adb#wireless-android11).
-3. On the computer: `adb devices` and accept the RSA prompt on the phone.
-4. Run `python3 agent.py` and leave it in a terminal or run under `systemd`/launchd.
-
-### Run in the background (Linux systemd user unit)
-
-```ini
-# ~/.config/systemd/user/phone-usage-agent.service
-[Unit]
-Description=Phone usage break reminders
-
-[Service]
-ExecStart=%h/path/to/phone-usage-agent/agent.py
-Restart=on-failure
-
-[Install]
-WantedBy=default.target
+```xml
+<!-- ~/Library/LaunchAgents/com.phone-usage-agent.plist -->
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.phone-usage-agent</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/python3</string>
+    <string>/FULL/PATH/phone-usage-agent/agent.py</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+</dict>
+</plist>
 ```
 
 ```bash
-systemctl --user enable --now phone-usage-agent.service
+launchctl load ~/Library/LaunchAgents/com.phone-usage-agent.plist
 ```
 
-## iPhone
+## Android setup
 
-iOS does not expose the same ADB-style signals to a PC. Practical options:
-
-- Use **Screen Time → App Limits** or **Downtime** in Settings.
-- Or run a Shortcuts automation on a schedule (not true “only while using” detection).
-
-This agent is aimed at **Android + desktop** today; an iOS companion would need a small native app or Shortcuts integration.
+1. **Settings → Developer options → USB debugging** on the phone.
+2. `adb devices` on the computer; accept the RSA prompt.
+3. `python3 agent.py --backend adb`
 
 ## License
 

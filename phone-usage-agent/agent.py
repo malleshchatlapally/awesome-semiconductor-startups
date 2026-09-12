@@ -3,7 +3,8 @@
 Phone usage agent: tracks active phone use and alerts every N minutes.
 
 Backends:
-  adb       - Android phone connected via USB/Wi‑Fi debugging (default)
+  iphone    - iPhone via Shortcuts heartbeats (default)
+  adb       - Android phone connected via USB/Wi‑Fi debugging
   simulate  - For testing: toggles "in use" on a timer
   manual    - stdin: press Enter when you start/stop using the phone
 """
@@ -12,17 +13,28 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import platform
 import shutil
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
+
+from iphone_server import start_iphone_server
+from iphone_state import IPhoneState
 
 DEFAULT_CONFIG_PATH = Path.home() / ".config" / "phone-usage-agent" / "config.json"
+
+
+@dataclass
+class IPhoneSettings:
+    host: str = "0.0.0.0"
+    port: int = 8765
+    secret: str = "change-me"
+    heartbeat_stale_seconds: float = 45.0
+    alert_on_iphone: bool = True
 
 
 @dataclass
@@ -30,24 +42,35 @@ class Config:
     interval_minutes: int = 30
     poll_seconds: float = 15.0
     idle_reset_minutes: float = 2.0
-    backend: str = "adb"
+    backend: str = "iphone"
     alert_title: str = "Phone break"
     alert_message: str = (
         "You've been on your phone for 30 minutes. Time to put it down."
     )
+    iphone: IPhoneSettings = field(default_factory=IPhoneSettings)
 
     @classmethod
     def load(cls, path: Optional[Path]) -> "Config":
         if path and path.is_file():
             data = json.loads(path.read_text())
+            iphone_raw = data.get("iphone") or {}
             return cls(
                 interval_minutes=int(data.get("interval_minutes", 30)),
                 poll_seconds=float(data.get("poll_seconds", 15)),
                 idle_reset_minutes=float(data.get("idle_reset_minutes", 2)),
-                backend=str(data.get("backend", "adb")),
+                backend=str(data.get("backend", "iphone")),
                 alert_title=str(data.get("alert_title", cls.alert_title)),
                 alert_message=str(
                     data.get("alert_message", cls().alert_message)
+                ),
+                iphone=IPhoneSettings(
+                    host=str(iphone_raw.get("host", "0.0.0.0")),
+                    port=int(iphone_raw.get("port", 8765)),
+                    secret=str(iphone_raw.get("secret", "change-me")),
+                    heartbeat_stale_seconds=float(
+                        iphone_raw.get("heartbeat_stale_seconds", 45)
+                    ),
+                    alert_on_iphone=bool(iphone_raw.get("alert_on_iphone", True)),
                 ),
             )
         return cls()
@@ -173,7 +196,20 @@ class ManualBackend:
             print(f"  → Phone: {state}", flush=True)
 
 
-def make_detector(cfg: Config, args: argparse.Namespace) -> Callable[[], bool]:
+def make_detector(
+    cfg: Config,
+    args: argparse.Namespace,
+    iphone_state: Optional[IPhoneState] = None,
+) -> Callable[[], bool]:
+    if cfg.backend == "iphone":
+        if iphone_state is None:
+            raise SystemExit("iPhone backend requires server state")
+        stale = cfg.iphone.heartbeat_stale_seconds
+
+        def _iphone_in_use() -> bool:
+            return iphone_state.in_use(stale)
+
+        return _iphone_in_use
     if cfg.backend == "simulate":
         sim = SimulateBackend(
             on_seconds=args.simulate_on,
@@ -197,7 +233,24 @@ def make_detector(cfg: Config, args: argparse.Namespace) -> Callable[[], bool]:
 def run_agent(cfg: Config, args: argparse.Namespace) -> None:
     interval_sec = cfg.interval_minutes * 60
     idle_reset_sec = cfg.idle_reset_minutes * 60
-    in_use = make_detector(cfg, args)
+    iphone_state: Optional[IPhoneState] = None
+    http_server: Any = None
+
+    if cfg.backend == "iphone":
+        iphone_state = IPhoneState()
+        http_server = start_iphone_server(
+            iphone_state,
+            cfg.iphone.host,
+            cfg.iphone.port,
+            cfg.iphone.secret,
+        )
+        print(
+            f"iPhone listener on {cfg.iphone.host}:{cfg.iphone.port} "
+            f"(POST /v1/heartbeat). See ios/README.md to set up Shortcuts.",
+            flush=True,
+        )
+
+    in_use = make_detector(cfg, args, iphone_state)
 
     active_seconds = 0.0
     idle_seconds = 0.0
@@ -246,6 +299,12 @@ def run_agent(cfg: Config, args: argparse.Namespace) -> None:
                 if "30 minutes" not in cfg.alert_message:
                     msg = f"{cfg.alert_message} ({n} {unit} of use)."
                 notify(cfg.alert_title, msg)
+                if (
+                    cfg.backend == "iphone"
+                    and iphone_state is not None
+                    and cfg.iphone.alert_on_iphone
+                ):
+                    iphone_state.queue_alert(cfg.alert_title, msg)
                 print(
                     f"  Alert #{alerted_blocks} "
                     f"({cfg.interval_minutes} min active use).",
@@ -264,6 +323,9 @@ def run_agent(cfg: Config, args: argparse.Namespace) -> None:
             time.sleep(cfg.poll_seconds)
     except KeyboardInterrupt:
         print("\nStopped.", flush=True)
+    finally:
+        if http_server is not None:
+            http_server.shutdown()
 
 
 def main() -> None:
@@ -283,9 +345,15 @@ def main() -> None:
     )
     parser.add_argument(
         "--backend",
-        choices=("adb", "simulate", "manual"),
+        choices=("iphone", "adb", "simulate", "manual"),
         default=None,
         help="Detection backend",
+    )
+    parser.add_argument(
+        "--iphone-port",
+        type=int,
+        default=None,
+        help="Override iphone.port from config",
     )
     parser.add_argument(
         "--simulate-on",
@@ -307,6 +375,8 @@ def main() -> None:
         cfg.interval_minutes = args.interval
     if args.backend is not None:
         cfg.backend = args.backend
+    if args.iphone_port is not None:
+        cfg.iphone.port = args.iphone_port
 
     run_agent(cfg, args)
 
