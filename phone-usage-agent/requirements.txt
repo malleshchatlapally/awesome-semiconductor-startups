@@ -1,0 +1,2 @@
+# No required dependencies — uses stdlib only.
+# Optional: install `adb` on your PATH for Android monitoring.
