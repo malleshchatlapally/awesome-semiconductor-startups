@@ -240,9 +240,11 @@ def run_agent(cfg: Config, args: argparse.Namespace) -> None:
 
             while active_seconds >= interval_sec:
                 alerted_blocks += 1
-                msg = cfg.alert_message.replace(
-                    "30", str(cfg.interval_minutes)
-                )
+                n = cfg.interval_minutes
+                unit = "minute" if n == 1 else "minutes"
+                msg = cfg.alert_message.replace("30 minutes", f"{n} {unit}")
+                if "30 minutes" not in cfg.alert_message:
+                    msg = f"{cfg.alert_message} ({n} {unit} of use)."
                 notify(cfg.alert_title, msg)
                 print(
                     f"  Alert #{alerted_blocks} "
